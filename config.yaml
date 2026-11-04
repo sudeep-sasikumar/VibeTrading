@@ -1,0 +1,40 @@
+# Backtest defaults. Command-line flags override the dates; strategy settings
+# change here.
+
+periods:
+  # Backtests start on `start`; prices from before it only warm up indicators.
+  # Results are reported for the whole run, before `split` (the period
+  # settings may be tuned on) and from `split` on (never tuned on).
+  stocks: {start: 2015-01-01, split: 2022-01-01}
+  # 2021, not 2019: before 2021 fewer than 100 Binance USDT pairs traded most
+  # days, so a "top 200" backtest would really trade 19-80 coins.
+  crypto: {start: 2021-01-01, split: 2024-01-01}
+
+initial_cash:
+  us_equity: 100000       # USD
+  india_equity: 1000000   # INR
+  crypto: 100000          # USDT
+
+engine:
+  # Resize a held position only once its weight drifts more than 25% from
+  # target, so a weekly rebalance doesn't trade on every small price move.
+  rebalance_tolerance: 0.25
+  # The crypto engine models perpetual futures and charges funding every 8 h
+  # unless told otherwise. These are spot trades, so no funding.
+  crypto_funding_rate: 0.0
+
+strategies:
+  momentum:
+    lookback: 126        # bars of return to rank by (~6 months of stock trading)
+    trend_ma: 200        # only symbols closing above this moving average
+    top_n: 10
+    rebalance: weekly    # or monthly
+  pullback:
+    trend_ma: 200
+    rsi_period: 2
+    entry_rsi: 10
+    exit_rsi: 70
+    max_hold_bars: 10
+    stop_loss: 0.08
+    max_positions: 10
+    rank_lookback: 126
