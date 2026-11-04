@@ -5,7 +5,8 @@ Swing-trading backtest portal built on the backtest engines from
 universe: Crypto Top 200, S&P 500, NASDAQ-100, Nifty 50, Nifty Midcap 150,
 Nifty Smallcap 250.
 
-Status: Phase 0 done, see [docs/phase0-findings.md](docs/phase0-findings.md).
+Status: Phase 1 (data) done. Findings:
+[Phase 0](docs/phase0-findings.md) (engines), [Phase 1](docs/phase1-findings.md) (data).
 
 ## Setup
 
@@ -20,6 +21,21 @@ python -m venv .venv
 
 `vibe-trading-ai` is kept out of `requirements.txt` on purpose: listed there,
 pip would install its full ~900 MB dependency set.
+
+For tests: `.venv/Scripts/python -m pip install -r requirements-dev.txt`, then
+`.venv/Scripts/python -m pytest tests`.
+
+## Data
+
+Universes: `crypto200`, `sp500`, `nasdaq100`, `nifty50`, `niftymidcap150`,
+`niftysmallcap250`. Prices and membership go to `var/prices.duckdb` (set
+`VIBETRADING_VAR` to put `var/` elsewhere).
+
+```bash
+.venv/Scripts/python -m vibetrading refresh                 # all six, ~4 min
+.venv/Scripts/python -m vibetrading refresh sp500 nifty50   # some
+.venv/Scripts/python -m vibetrading coverage                # report only
+```
 
 ## Phase 0 spike
 
