@@ -30,6 +30,7 @@ class Universe:
     history_start: str
     backtest_start: str
     source_list: str = ""  # index-constitution index or NSE list name
+    regime: str = ""       # market-trend symbol for the regime filter (longest-history index)
 
 
 _STOCKS = dict(history_start=settings.STOCK_HISTORY_START, backtest_start=settings.STOCK_BACKTEST_START)
@@ -38,16 +39,17 @@ UNIVERSES: dict[str, Universe] = {
     u.key: u
     for u in [
         Universe("crypto200", "Crypto Top 200", "crypto", "BTC-USDT", "volume_rank",
-                 settings.CRYPTO_HISTORY_START, settings.CRYPTO_BACKTEST_START),
-        Universe("sp500", "S&P 500", "us_equity", "SPY.US", "point_in_time", **_STOCKS, source_list="sp500"),
+                 settings.CRYPTO_HISTORY_START, settings.CRYPTO_BACKTEST_START, regime="BTC-USDT"),
+        Universe("sp500", "S&P 500", "us_equity", "SPY.US", "point_in_time", **_STOCKS, source_list="sp500",
+                 regime="SPY.US"),
         Universe("nasdaq100", "NASDAQ-100", "us_equity", "QQQ.US", "point_in_time", **_STOCKS,
-                 source_list="nasdaq100"),
+                 source_list="nasdaq100", regime="QQQ.US"),
         Universe("nifty50", "Nifty 50", "india_equity", "^NSEI", "current_only", **_STOCKS,
-                 source_list="ind_nifty50list"),
+                 source_list="ind_nifty50list", regime="^NSEI"),
         Universe("niftymidcap150", "Nifty Midcap 150", "india_equity", "NIFTYMIDCAP150.NS", "current_only",
-                 **_STOCKS, source_list="ind_niftymidcap150list"),
+                 **_STOCKS, source_list="ind_niftymidcap150list", regime="^NSEI"),
         Universe("niftysmallcap250", "Nifty Smallcap 250", "india_equity", "NIFTYSMLCAP250.NS", "current_only",
-                 **_STOCKS, source_list="ind_niftysmallcap250list"),
+                 **_STOCKS, source_list="ind_niftysmallcap250list", regime="^NSEI"),
     ]
 }
 

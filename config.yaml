@@ -22,6 +22,31 @@ engine:
   # The crypto engine models perpetual futures and charges funding every 8 h
   # unless told otherwise. These are spot trades, so no funding.
   crypto_funding_rate: 0.0
+  # Market-trend filter (strategies' regime_filter): the universe's index, or
+  # BTC for crypto, must close above this many days' average.
+  regime_ma: 200
+  # Cost per side the fast sweep evaluator charges (the engine models the full
+  # fee stack). US: 0.05% slippage. India: STT 0.1% + 0.1% slippage + exchange,
+  # stamp, SEBI and GST ~0.02%. Crypto: 0.05% taker + 0.05% slippage.
+  sweep_cost_per_side: {us_equity: 0.0005, india_equity: 0.0022, crypto: 0.001}
+
+# Settings `python -m vibetrading sweep` tries, on the in-sample years only.
+# Every combination is evaluated; the one with the best in-sample Sharpe is
+# written to tuned.yaml. Out-of-sample results are reported, never used to choose.
+sweeps:
+  momentum:
+    lookback: [63, 126, 252]
+    top_n: [5, 10, 20]
+    rebalance: [weekly, monthly]
+    regime_filter: [false, true]
+    liquid_top: [null, 50]
+  pullback:
+    entry_rsi: [5, 10, 20]
+    exit_rule: [rsi, ma]
+    max_hold_bars: [5, 10, 20]
+    stop_loss: [0.08, null]
+    regime_filter: [false, true]
+    liquid_top: [null, 50]
 
 strategies:
   momentum:

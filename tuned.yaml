@@ -1,0 +1,82 @@
+# Written by `python -m vibetrading sweep`: per strategy and universe, the
+# setting with the best in-sample Sharpe. Used by `backtest --tuned`.
+momentum:
+  crypto200:
+    liquid_top: null
+    lookback: 252
+    rebalance: monthly
+    regime_filter: true
+    top_n: 10
+  nasdaq100:
+    liquid_top: 50
+    lookback: 126
+    rebalance: monthly
+    regime_filter: false
+    top_n: 5
+  nifty50:
+    liquid_top: null
+    lookback: 126
+    rebalance: weekly
+    regime_filter: false
+    top_n: 20
+  niftymidcap150:
+    liquid_top: null
+    lookback: 252
+    rebalance: monthly
+    regime_filter: false
+    top_n: 10
+  niftysmallcap250:
+    liquid_top: null
+    lookback: 252
+    rebalance: monthly
+    regime_filter: true
+    top_n: 20
+  sp500:
+    liquid_top: 50
+    lookback: 63
+    rebalance: monthly
+    regime_filter: false
+    top_n: 10
+pullback:
+  crypto200:
+    entry_rsi: 10
+    exit_rule: rsi
+    liquid_top: null
+    max_hold_bars: 10
+    regime_filter: true
+    stop_loss: null
+  nasdaq100:
+    entry_rsi: 20
+    exit_rule: rsi
+    liquid_top: 50
+    max_hold_bars: 20
+    regime_filter: false
+    stop_loss: null
+  nifty50:
+    entry_rsi: 5
+    exit_rule: rsi
+    liquid_top: null
+    max_hold_bars: 20
+    regime_filter: true
+    stop_loss: 0.08
+  niftymidcap150:
+    entry_rsi: 5
+    exit_rule: ma
+    liquid_top: null
+    max_hold_bars: 5
+    regime_filter: true
+    stop_loss: null
+  niftysmallcap250:
+    entry_rsi: 20
+    exit_rule: rsi
+    liquid_top: null
+    max_hold_bars: 10
+    regime_filter: false
+    stop_loss: null
+  sp500:
+    entry_rsi: 10
+    exit_rule: rsi
+    liquid_top: 50
+    max_hold_bars: 10
+    regime_filter: true
+    stop_loss: null

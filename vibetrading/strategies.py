@@ -10,6 +10,13 @@ held on days it was a universe member and had a price. Where the mask turns
 False the weight drops to 0 that same bar, so the position is sold at the next
 open: when a stock leaves the index, a coin drops out of the top 200, or the
 day before a symbol's prices end.
+
+Optional filters, all off by default:
+- ``regime_filter``: buy only while the market (``regime``, True when the
+  universe's index or BTC closes above its 200-day average) is in an uptrend.
+- ``liquid_top``: buy only the N most traded tradeable symbols by 20-day
+  average traded value. Holding isn't affected, so a position isn't sold just
+  because it slipped down the liquidity ranking.
 """
 
 from __future__ import annotations
@@ -41,6 +48,24 @@ def rebalance_days(index: pd.DatetimeIndex, every: str) -> pd.Series:
     return pd.Series(index == last.values, index=index)
 
 
+def entry_filter(close: pd.DataFrame, data_map: dict[str, pd.DataFrame], mask: pd.DataFrame,
+                 liquid_top: int | None) -> pd.DataFrame:
+    """``mask`` narrowed to the ``liquid_top`` most traded symbols each day."""
+    if not liquid_top:
+        return mask
+    traded = pd.DataFrame({s: df["close"] * df["volume"] for s, df in data_map.items()})
+    traded = traded.reindex(index=close.index, columns=close.columns).rolling(20, min_periods=10).mean()
+    rank = traded.where(mask).rank(axis=1, ascending=False, method="first")
+    return mask & (rank <= liquid_top)
+
+
+def risk_on(regime: pd.Series | None, index: pd.DatetimeIndex) -> pd.Series:
+    """The market-trend flag on ``index``; always True without a regime series."""
+    if regime is None:
+        return pd.Series(True, index=index)
+    return regime.astype(float).reindex(index, method="ffill").fillna(0.0).astype(bool)
+
+
 def _to_signal_map(weights: pd.DataFrame, data_map: dict[str, pd.DataFrame]) -> dict[str, pd.Series]:
     """Back onto each symbol's own calendar, which is what the engine reads."""
     return {s: weights[s].reindex(df.index).fillna(0.0) for s, df in data_map.items()}
@@ -52,21 +77,25 @@ class Momentum:
 
     On each rebalance bar, rank tradeable symbols that close above their
     ``trend_ma``-day average by their ``lookback``-bar return, and hold the top
-    ``top_n`` with a positive return at ``1 / top_n`` each.
+    ``top_n`` with a positive return at ``1 / top_n`` each. With the regime
+    filter on, the whole book goes to cash on any day the market trend is down.
     """
 
     tradeable: pd.DataFrame
+    regime: pd.Series | None = None
     lookback: int = 126
     trend_ma: int = 200
     top_n: int = 10
     rebalance: str = "weekly"
+    regime_filter: bool = False
+    liquid_top: int | None = None
 
     def generate(self, data_map: dict[str, pd.DataFrame]) -> dict[str, pd.Series]:
         close = close_panel(data_map)
         mask = self.tradeable.reindex(index=close.index, columns=close.columns, fill_value=False)
         score = close / close.shift(self.lookback) - 1
         uptrend = close > close.rolling(self.trend_ma, min_periods=self.trend_ma).mean()
-        eligible = mask & uptrend & (score > 0)
+        eligible = entry_filter(close, data_map, mask, self.liquid_top) & uptrend & (score > 0)
 
         is_rebalance = rebalance_days(close.index, self.rebalance)
         weights = pd.DataFrame(np.nan, index=close.index, columns=close.columns)
@@ -75,6 +104,8 @@ class Momentum:
             weights.loc[day] = 0.0
             weights.loc[day, picks] = 1.0 / self.top_n
         weights = weights.ffill().fillna(0.0).where(mask, 0.0)
+        if self.regime_filter:
+            weights = weights.mul(risk_on(self.regime, close.index), axis=0)
         return _to_signal_map(weights, data_map)
 
 
@@ -83,30 +114,49 @@ class Pullback:
     """Buy short, sharp dips in long uptrends; sell the bounce.
 
     Enter when a tradeable symbol is above its ``trend_ma``-day average and its
-    ``rsi_period`` RSI closes below ``entry_rsi``. Exit when RSI closes above
-    ``exit_rsi``, after ``max_hold_bars`` bars, on a close ``stop_loss`` below
-    the entry close, or when the symbol stops being tradeable. Up to
+    ``rsi_period`` RSI closes below ``entry_rsi``. Exit on the bounce (RSI
+    closes above ``exit_rsi``, or with ``exit_rule: ma`` the close crosses above
+    its ``exit_ma``-day average), after ``max_hold_bars`` bars, on a close
+    ``stop_loss`` below the entry close (``None`` turns the stop off), or when
+    the symbol stops being tradeable. The regime filter blocks new entries in a
+    market downtrend; open positions still exit by their own rules. Up to
     ``max_positions`` at ``1 / max_positions`` each; when more symbols qualify
     than there are free slots, the strongest ``rank_lookback``-bar return wins.
     """
 
     tradeable: pd.DataFrame
+    regime: pd.Series | None = None
     trend_ma: int = 200
     rsi_period: int = 2
     entry_rsi: float = 10.0
     exit_rsi: float = 70.0
+    exit_rule: str = "rsi"
+    exit_ma: int = 5
     max_hold_bars: int = 10
-    stop_loss: float = 0.08
+    stop_loss: float | None = 0.08
     max_positions: int = 10
     rank_lookback: int = 126
+    regime_filter: bool = False
+    liquid_top: int | None = None
 
     def generate(self, data_map: dict[str, pd.DataFrame]) -> dict[str, pd.Series]:
         close = close_panel(data_map)
-        mask = self.tradeable.reindex(index=close.index, columns=close.columns, fill_value=False).to_numpy()
+        mask_df = self.tradeable.reindex(index=close.index, columns=close.columns, fill_value=False)
+        mask = mask_df.to_numpy()
+        can_enter = entry_filter(close, data_map, mask_df, self.liquid_top).to_numpy()
+        market_up = (risk_on(self.regime, close.index) if self.regime_filter
+                     else pd.Series(True, index=close.index)).to_numpy()
         px = close.to_numpy()
         trend = (close > close.rolling(self.trend_ma, min_periods=self.trend_ma).mean()).to_numpy()
         r = rsi(close, self.rsi_period).to_numpy()
         strength = (close / close.shift(self.rank_lookback) - 1).to_numpy()
+        if self.exit_rule == "ma":
+            bounced = (close > close.rolling(self.exit_ma, min_periods=self.exit_ma).mean()).to_numpy()
+        elif self.exit_rule == "rsi":
+            bounced = r > self.exit_rsi
+        else:
+            raise ValueError(f"exit_rule must be 'rsi' or 'ma', not {self.exit_rule!r}")
+        stop = self.stop_loss if self.stop_loss is not None else np.inf
 
         n_days, n_syms = px.shape
         held = np.zeros(n_syms, dtype=bool)
@@ -120,9 +170,9 @@ class Pullback:
             bars_held[held & priced] += 1
             # A symbol with no bar today keeps its position untouched.
             exit_now = held & priced & (
-                (r[t] > self.exit_rsi)
+                bounced[t]
                 | (bars_held >= self.max_hold_bars)
-                | (px[t] < entry_px * (1 - self.stop_loss))
+                | (px[t] < entry_px * (1 - stop))
             )
             exit_now |= held & ~mask[t]
             held &= ~exit_now
@@ -130,8 +180,8 @@ class Pullback:
             bars_held[exit_now] = 0
 
             free = self.max_positions - int(held.sum())
-            if free > 0:
-                candidates = mask[t] & priced & ~held & trend[t] & (r[t] < self.entry_rsi)
+            if free > 0 and market_up[t]:
+                candidates = can_enter[t] & priced & ~held & trend[t] & (r[t] < self.entry_rsi)
                 idx = np.flatnonzero(candidates)
                 if idx.size:
                     order = idx[np.argsort(-np.nan_to_num(strength[t, idx], nan=-np.inf))]

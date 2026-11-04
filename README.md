@@ -7,7 +7,8 @@ Nifty Smallcap 250.
 
 Status: Phase 2 (strategies and backtests) done. Findings:
 [Phase 0](docs/phase0-findings.md) (engines), [Phase 1](docs/phase1-findings.md) (data),
-[Phase 2](docs/phase2-findings.md) (first results).
+[Phase 2](docs/phase2-findings.md) (first results),
+[tuning](docs/phase2b-tuning-findings.md).
 
 ## Setup
 
@@ -48,6 +49,18 @@ backtest periods live in [config.yaml](config.yaml).
 .venv/Scripts/python -m vibetrading backtest --strategy momentum sp500
 .venv/Scripts/python -m vibetrading backtest --strategy pullback              # all six universes
 .venv/Scripts/python -m vibetrading backtest --strategy momentum nifty50 --start 2018-01-01
+```
+
+Tuning: `sweep` tries every setting in `config.yaml`'s `sweeps` grid with a
+fast approximate evaluator, picks the best in-sample Sharpe per universe, and
+writes it to `tuned.yaml`; `backtest --tuned` runs those through the engine.
+`check` compares the fast evaluator with saved engine runs.
+
+```bash
+.venv/Scripts/python -m vibetrading sweep --strategy momentum            # ~7 min, all six
+.venv/Scripts/python -m vibetrading sweep --strategy pullback sp500 --workers 2
+.venv/Scripts/python -m vibetrading backtest --strategy momentum --tuned sp500
+.venv/Scripts/python -m vibetrading check
 ```
 
 Each run prints CAGR, max drawdown, Sharpe, the benchmark's CAGR and drawdown,

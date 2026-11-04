@@ -27,6 +27,8 @@ from vibetrading.universes import UNIVERSES, Universe
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
+# Settings chosen by `python -m vibetrading sweep`, per strategy and universe.
+TUNED_PATH = CONFIG_PATH.with_name("tuned.yaml")
 RUNS_DIR = VAR_DIR / "runs"
 # Calendar days of prices loaded before the backtest start, enough for a
 # 200-bar average on stock calendars (~290 days) with room to spare.
@@ -95,56 +97,108 @@ class RunResult:
     summary: dict
 
 
+@dataclass
+class Prepared:
+    """Everything a strategy needs for one universe and window, loaded once."""
+
+    universe: Universe
+    start: str
+    split: str
+    end: str
+    load_from: str
+    raw: dict[str, pd.DataFrame]          # store prices, before break splitting
+    data_map: dict[str, pd.DataFrame]     # what the engine and strategies see
+    mask: pd.DataFrame
+    regime: pd.Series                     # True while the market index closes above its average
+    benchmark: pd.Series | None
+    ends_early: set[str]
+    price_breaks: list
+
+
 def load_config() -> dict:
     return yaml.safe_load(CONFIG_PATH.read_text())
 
 
-def run(universe_key: str, strategy_key: str, start: str | None = None, end: str | None = None,
-        store: PriceStore | None = None) -> RunResult:
+def load_tuned() -> dict:
+    return yaml.safe_load(TUNED_PATH.read_text()) if TUNED_PATH.exists() else {}
+
+
+def strategy_params(cfg: dict, strategy_key: str, universe_key: str, tuned: bool) -> dict:
+    """Defaults from config.yaml, overlaid with tuned.yaml's choice for this universe."""
+    params = dict(cfg["strategies"][strategy_key])
+    if tuned:
+        chosen = load_tuned().get(strategy_key, {}).get(universe_key)
+        if chosen is None:
+            raise ValueError(f"tuned.yaml has no {strategy_key} settings for {universe_key}; run a sweep first")
+        params.update(chosen)
+    return params
+
+
+def prepare(universe_key: str, store: PriceStore, start: str | None = None, end: str | None = None) -> Prepared:
     universe: Universe = UNIVERSES[universe_key]
     cfg = load_config()
     period = cfg["periods"]["crypto" if universe.market == "crypto" else "stocks"]
     start = str(start or period["start"])
     split = str(period["split"])
-    params = dict(cfg["strategies"][strategy_key])
+
+    members = store.members(universe.key)
+    spans = store.price_spans(sorted(members["symbol"].unique()))
+    usable = spans[spans["rows"] >= MIN_PRICE_ROWS]
+    load_from = (pd.Timestamp(start) - pd.Timedelta(WARMUP_DAYS, unit="D")).date().isoformat()
+    end = str(end or pd.Timestamp(usable["last_date"].max()).date().isoformat())
+
+    raw = CachedLoader(store).fetch(sorted(usable.index), load_from, end)
+    data_map, price_breaks = split_at_breaks(raw, crypto=universe.market == "crypto")
+    latest = max(df.index[-1] for df in data_map.values())
+    # Prices ending more than a week before the latest bar mean the symbol stopped trading.
+    ends_early = {s for s, df in data_map.items() if df.index[-1] < latest - pd.Timedelta(7, unit="D")}
+    # A piece after a break belongs to the universe whenever the original symbol did.
+    pieces = pd.concat([members[members["symbol"] == b.symbol].assign(symbol=b.new_symbol)
+                        for b in price_breaks] or [members.iloc[:0]])
+    mask = tradeable_mask(pd.concat([members[members["symbol"].isin(raw)], pieces]), data_map, ends_early)
+
+    regime_close = store.prices([universe.regime], None, end)[universe.regime]["close"]
+    regime_ma = cfg["engine"]["regime_ma"]
+    regime = regime_close > regime_close.rolling(regime_ma, min_periods=regime_ma).mean()
+    bench = store.prices([universe.benchmark], start, end).get(universe.benchmark)
+    return Prepared(universe, start, split, end, load_from, raw, data_map, mask, regime,
+                    bench["close"] if bench is not None else None, ends_early, price_breaks)
+
+
+def run(universe_key: str, strategy_key: str, start: str | None = None, end: str | None = None,
+        store: PriceStore | None = None, tuned: bool = False) -> RunResult:
+    cfg = load_config()
+    params = strategy_params(cfg, strategy_key, universe_key, tuned)
 
     own_store = store is None
     store = store or PriceStore()
     try:
-        members = store.members(universe.key)
-        spans = store.price_spans(sorted(members["symbol"].unique()))
-        usable = spans[spans["rows"] >= MIN_PRICE_ROWS]
-        load_from = (pd.Timestamp(start) - pd.Timedelta(WARMUP_DAYS, unit="D")).date().isoformat()
-        end = str(end or pd.Timestamp(usable["last_date"].max()).date().isoformat())
-
+        prep = prepare(universe_key, store, start, end)
+        universe = prep.universe
         loader = CachedLoader(store)
-        raw = loader.fetch(sorted(usable.index), load_from, end)
-        data_map, price_breaks = split_at_breaks(raw, crypto=universe.market == "crypto")
-        loader.prepared = data_map
-        latest = max(df.index[-1] for df in data_map.values())
-        # Prices ending more than a week before the latest bar mean the symbol stopped trading.
-        ends_early = {s for s, df in data_map.items() if df.index[-1] < latest - pd.Timedelta(7, unit="D")}
-        # A piece after a break belongs to the universe whenever the original symbol did.
-        pieces = pd.concat([members[members["symbol"] == b.symbol].assign(symbol=b.new_symbol)
-                            for b in price_breaks] or [members.iloc[:0]])
-        mask = tradeable_mask(pd.concat([members[members["symbol"].isin(raw)], pieces]), data_map, ends_early)
-        strategy = STRATEGIES[strategy_key](tradeable=mask, **params)
-        codes = sorted(data_map)
+        loader.prepared = prep.data_map
+        strategy = STRATEGIES[strategy_key](tradeable=prep.mask, regime=prep.regime, **params)
 
         engine_config = {
-            "codes": codes, "start_date": load_from, "end_date": end,
+            "codes": sorted(prep.data_map), "start_date": prep.load_from, "end_date": prep.end,
             "source": loader.name, "interval": "1D",
             "initial_cash": cfg["initial_cash"][universe.market],
             "position_adjustment": "rebalance",
             "rebalance_tolerance": cfg["engine"]["rebalance_tolerance"],
-            "evaluation_start_date": start,
+            "evaluation_start_date": prep.start,
         }
         if universe.market == "crypto":
             engine_config["funding_rate"] = cfg["engine"]["crypto_funding_rate"]
 
-        run_dir = RUNS_DIR / universe.key / strategy_key / datetime.now().strftime("%Y%m%d-%H%M%S")
+        label = f"{strategy_key}-tuned" if tuned else strategy_key
+        run_dir = RUNS_DIR / universe.key / label / datetime.now().strftime("%Y%m%d-%H%M%S")
         run_dir.mkdir(parents=True, exist_ok=True)
         engine = _engine(universe, engine_config)
+        # The engine also writes a CSV of every symbol's prices (750 files for the
+        # S&P 500). They duplicate the price store and, on a machine short of
+        # memory, writing them was what failed; pass it no prices to copy.
+        write_artifacts = engine._write_artifacts
+        engine._write_artifacts = lambda run_dir, _data_map, *args, **kw: write_artifacts(run_dir, {}, *args, **kw)
         bars_per_year = BARS_PER_YEAR[universe.market]
 
         started = datetime.now()
@@ -159,18 +213,16 @@ def run(universe_key: str, strategy_key: str, start: str | None = None, end: str
         seconds = (datetime.now() - started).total_seconds()
 
         equity, trades, fills = metrics.load_artifacts(run_dir / "artifacts")
-        bench_prices = store.prices([universe.benchmark], start, end).get(universe.benchmark)
-        benchmark = bench_prices["close"] if bench_prices is not None else None
-        report = metrics.period_report(equity, trades, fills, benchmark, split, bars_per_year)
+        report = metrics.period_report(equity, trades, fills, prep.benchmark, prep.split, bars_per_year)
 
         summary = metrics.to_jsonable({
             "universe": universe.key, "universe_title": universe.title, "membership": universe.membership,
-            "strategy": strategy_key, "params": params,
-            "start": start, "split": split, "end": end,
-            "benchmark": universe.benchmark,
-            "symbols_loaded": len(raw), "symbols_ending_early": len(ends_early),
+            "strategy": strategy_key, "tuned": tuned, "params": params,
+            "start": prep.start, "split": prep.split, "end": prep.end,
+            "benchmark": universe.benchmark, "regime_symbol": universe.regime,
+            "symbols_loaded": len(prep.raw), "symbols_ending_early": len(prep.ends_early),
             "price_breaks": [{"symbol": b.symbol, "date": b.date.date().isoformat(),
-                              "ratio": b.ratio, "new_symbol": b.new_symbol} for b in price_breaks],
+                              "ratio": b.ratio, "new_symbol": b.new_symbol} for b in prep.price_breaks],
             "engine": type(engine).__name__, "engine_seconds": round(seconds, 1),
             "engine_config": {k: v for k, v in engine_config.items() if k != "codes"},
             "periods": report,
@@ -200,7 +252,8 @@ def render(summary: dict) -> str:
     def num(v, fmt="{:5.2f}"):
         return "  –  " if v is None else fmt.format(v)
 
-    lines = [f"{summary['universe_title']} | {summary['strategy']} | {summary['start']} to {summary['end']} "
+    tuned = " (tuned)" if summary.get("tuned") else ""
+    lines = [f"{summary['universe_title']} | {summary['strategy']}{tuned} | {summary['start']} to {summary['end']} "
              f"(split {summary['split']}, {summary['membership']}, {summary['engine_seconds']} s)"]
     if summary.get("price_breaks"):
         lines.append("  price breaks split: " + ", ".join(

@@ -55,7 +55,14 @@ CREATE TABLE IF NOT EXISTS fetch_log (
 
 
 class PriceStore:
-    def __init__(self, path: Path = DB_PATH):
+    def __init__(self, path: Path = DB_PATH, read_only: bool = False):
+        """``read_only`` lets several processes read at once (parallel sweeps)."""
+        if read_only:
+            # Each sweep worker opens its own connection; by default DuckDB lets
+            # every one of them claim most of the machine's memory.
+            self.con = duckdb.connect(str(path), read_only=True,
+                                      config={"memory_limit": "512MB", "threads": 2})
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         self.con = duckdb.connect(str(path))
         self.con.execute(_SCHEMA)
@@ -88,21 +95,22 @@ class PriceStore:
 
     def prices(self, symbols: list[str], start: str | None = None, end: str | None = None) -> dict[str, pd.DataFrame]:
         """Daily bars per symbol, in the shape Vibe-Trading loaders return."""
-        if not symbols:
-            return {}
-        df = self.con.execute(
-            f"""SELECT symbol, date, {', '.join(PRICE_COLUMNS)} FROM prices
-                WHERE symbol IN (SELECT unnest(?)) AND date >= COALESCE(?::DATE, DATE '1900-01-01')
-                  AND date <= COALESCE(?::DATE, DATE '2999-12-31')
-                ORDER BY symbol, date""",
-            [symbols, start, end],
-        ).df()
         out = {}
-        for symbol, group in df.groupby("symbol", sort=False):
-            frame = group.drop(columns="symbol").set_index("date")
-            frame.index = pd.to_datetime(frame.index)
-            frame.index.name = "trade_date"
-            out[symbol] = frame
+        # In chunks: one query for 750 symbols briefly holds several copies of
+        # the whole result, which a machine short of memory can't spare.
+        for i in range(0, len(symbols), 100):
+            df = self.con.execute(
+                f"""SELECT symbol, date, {', '.join(PRICE_COLUMNS)} FROM prices
+                    WHERE symbol IN (SELECT unnest(?)) AND date >= COALESCE(?::DATE, DATE '1900-01-01')
+                      AND date <= COALESCE(?::DATE, DATE '2999-12-31')
+                    ORDER BY symbol, date""",
+                [symbols[i : i + 100], start, end],
+            ).df()
+            for symbol, group in df.groupby("symbol", sort=False):
+                frame = group.drop(columns="symbol").set_index("date")
+                frame.index = pd.to_datetime(frame.index)
+                frame.index.name = "trade_date"
+                out[symbol] = frame
         return out
 
     def last_dates(self) -> dict[str, pd.Timestamp]:
