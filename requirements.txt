@@ -1,0 +1,18 @@
+# Install in two steps (see README): first
+#   pip install --no-deps vibe-trading-ai==0.1.18
+# then this list. Its full dependency set pulls in the LLM agent, China data
+# SDKs and document tooling (~900 MB); the backtest engines need only these.
+# vibe-trading-ai is deliberately not listed here: pip would then resolve and
+# install its full dependency set.
+pandas>=2.0,<3.0
+numpy>=1.24
+scipy>=1.10
+yfinance>=0.2.30
+ccxt>=4.5.71
+pydantic>=2.0
+pyyaml>=6.0
+python-dotenv>=1.0
+httpx>=0.28
+requests>=2.31
+duckdb>=1.2
+defusedxml>=0.7.1
