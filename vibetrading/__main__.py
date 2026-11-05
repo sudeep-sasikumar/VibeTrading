@@ -5,6 +5,7 @@
     python -m vibetrading backtest --strategy momentum [universe ...] [--start 2016-01-01] [--end ...] [--tuned]
     python -m vibetrading sweep    --strategy momentum [universe ...]
     python -m vibetrading check    [universe ...]
+    python -m vibetrading walkforward --strategy momentum [universe ...] [--window 3] [--engine]
 """
 
 from __future__ import annotations
@@ -27,7 +28,8 @@ def main(argv: list[str] | None = None) -> int:
                             ("coverage", "report how much of each universe has prices"),
                             ("backtest", "run a strategy and print its stats"),
                             ("sweep", "choose settings on the in-sample years (fast evaluator)"),
-                            ("check", "compare the fast evaluator with saved engine runs")]:
+                            ("check", "compare the fast evaluator with saved engine runs"),
+                            ("walkforward", "re-choose settings each year from earlier years only")]:
         cmd = commands[name] = sub.add_parser(name, help=help_text)
         cmd.add_argument("universes", nargs="*", metavar="universe",
                          help=f"any of {', '.join(UNIVERSES)} (default: all)")
@@ -39,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     commands["sweep"].add_argument("--strategy", required=True, choices=list(STRATEGIES))
     commands["sweep"].add_argument("--workers", type=int, default=1,
                                    help="universes swept in parallel (each needs ~0.5-1 GB of memory)")
+    wf = commands["walkforward"]
+    wf.add_argument("--strategy", required=True, choices=list(STRATEGIES))
+    wf.add_argument("--window", type=int, help="also test training on only the last N years")
+    wf.add_argument("--engine", action="store_true", help="also replay the chosen schedule through the engine")
     args = parser.parse_args(argv)
     unknown = [u for u in args.universes if u not in UNIVERSES]
     if unknown:
@@ -49,6 +55,16 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     keys = args.universes or list(UNIVERSES)
+    if args.command == "walkforward":
+        from vibetrading import walkforward
+        windows = [None] + ([args.window] if args.window else [])
+        for key in keys:
+            for i, result in enumerate(walkforward.run(key, args.strategy, windows)):
+                print(walkforward.render(result))
+                if args.engine and i == 0:  # replay the expanding-window schedule
+                    from vibetrading import backtest
+                    print(backtest.render(walkforward.run_engine(result).summary))
+        return 0
     if args.command in ("sweep", "check"):
         from vibetrading import sweep
         if args.command == "sweep":

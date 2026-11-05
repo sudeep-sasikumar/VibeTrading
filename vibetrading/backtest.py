@@ -166,9 +166,17 @@ def prepare(universe_key: str, store: PriceStore, start: str | None = None, end:
 
 
 def run(universe_key: str, strategy_key: str, start: str | None = None, end: str | None = None,
-        store: PriceStore | None = None, tuned: bool = False) -> RunResult:
+        store: PriceStore | None = None, tuned: bool = False,
+        strategy_factory=None, label: str | None = None, params: dict | None = None) -> RunResult:
+    """Run one strategy through the engine.
+
+    ``strategy_factory(prep)`` replaces the configured strategy (the walk-forward
+    uses it to run a schedule of settings); ``label`` names its run folder and
+    ``params`` is what its summary records.
+    """
     cfg = load_config()
-    params = strategy_params(cfg, strategy_key, universe_key, tuned)
+    if strategy_factory is None:
+        params = strategy_params(cfg, strategy_key, universe_key, tuned)
 
     own_store = store is None
     store = store or PriceStore()
@@ -177,7 +185,8 @@ def run(universe_key: str, strategy_key: str, start: str | None = None, end: str
         universe = prep.universe
         loader = CachedLoader(store)
         loader.prepared = prep.data_map
-        strategy = STRATEGIES[strategy_key](tradeable=prep.mask, regime=prep.regime, **params)
+        strategy = (strategy_factory(prep) if strategy_factory is not None
+                    else STRATEGIES[strategy_key](tradeable=prep.mask, regime=prep.regime, **params))
 
         engine_config = {
             "codes": sorted(prep.data_map), "start_date": prep.load_from, "end_date": prep.end,
@@ -190,7 +199,7 @@ def run(universe_key: str, strategy_key: str, start: str | None = None, end: str
         if universe.market == "crypto":
             engine_config["funding_rate"] = cfg["engine"]["crypto_funding_rate"]
 
-        label = f"{strategy_key}-tuned" if tuned else strategy_key
+        label = label or (f"{strategy_key}-tuned" if tuned else strategy_key)
         run_dir = RUNS_DIR / universe.key / label / datetime.now().strftime("%Y%m%d-%H%M%S")
         run_dir.mkdir(parents=True, exist_ok=True)
         engine = _engine(universe, engine_config)

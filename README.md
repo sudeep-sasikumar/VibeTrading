@@ -8,7 +8,7 @@ Nifty Smallcap 250.
 Status: Phase 2 (strategies and backtests) done. Findings:
 [Phase 0](docs/phase0-findings.md) (engines), [Phase 1](docs/phase1-findings.md) (data),
 [Phase 2](docs/phase2-findings.md) (first results),
-[tuning](docs/phase2b-tuning-findings.md).
+[tuning](docs/phase2b-tuning-findings.md), [walk-forward](docs/phase2c-walkforward-findings.md).
 
 ## Setup
 
@@ -61,6 +61,15 @@ writes it to `tuned.yaml`; `backtest --tuned` runs those through the engine.
 .venv/Scripts/python -m vibetrading sweep --strategy pullback sp500 --workers 2
 .venv/Scripts/python -m vibetrading backtest --strategy momentum --tuned sp500
 .venv/Scripts/python -m vibetrading check
+```
+
+Walk-forward: re-choose the setting each year from the years before it, and
+compare with defaults, the single-split pick, the grid average and buy & hold.
+`--window 3` also tests a rolling 3-year training window; `--engine` replays
+the chosen schedule through the engine.
+
+```bash
+.venv/Scripts/python -m vibetrading walkforward --strategy momentum sp500 --window 3 --engine
 ```
 
 Each run prints CAGR, max drawdown, Sharpe, the benchmark's CAGR and drawdown,

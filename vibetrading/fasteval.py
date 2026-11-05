@@ -29,14 +29,19 @@ def weights_panel(signal_map: dict[str, pd.Series]) -> pd.DataFrame:
     return pd.DataFrame(signal_map).sort_index().ffill(limit=WEIGHT_FFILL_LIMIT).fillna(0.0)
 
 
-def equity_curve(weights: pd.DataFrame, opens: pd.DataFrame, cost_per_side: float,
-                 start: str) -> tuple[pd.Series, float]:
-    """Daily equity from ``start`` (1.0 = initial) and one-way turnover per year."""
+def net_returns(weights: pd.DataFrame, opens: pd.DataFrame, cost_per_side: float) -> tuple[pd.Series, pd.Series]:
+    """Daily return after costs, and the traded fraction of equity, per day."""
     opens = opens.reindex(index=weights.index, columns=weights.columns).ffill(limit=WEIGHT_FFILL_LIMIT)
     open_to_open = (opens.shift(-1) / opens - 1).fillna(0.0)
     held = weights.shift(1).fillna(0.0)          # decided at yesterday's close, bought at today's open
     traded = held.diff().abs().sum(axis=1).fillna(held.abs().sum(axis=1))
-    daily = (held * open_to_open).sum(axis=1) - traded * cost_per_side
+    return (held * open_to_open).sum(axis=1) - traded * cost_per_side, traded
+
+
+def equity_curve(weights: pd.DataFrame, opens: pd.DataFrame, cost_per_side: float,
+                 start: str) -> tuple[pd.Series, float]:
+    """Daily equity from ``start`` (1.0 = initial) and one-way turnover per year."""
+    daily, traded = net_returns(weights, opens, cost_per_side)
     window = daily.index >= pd.Timestamp(start)
     daily, traded = daily[window], traded[window]
     equity = (1 + daily).cumprod()
@@ -44,12 +49,19 @@ def equity_curve(weights: pd.DataFrame, opens: pd.DataFrame, cost_per_side: floa
     return equity, float(traded.sum() / 2 / years)
 
 
+def strategy_weights(prep, strategy_key: str, params: dict) -> pd.DataFrame:
+    strategy = STRATEGIES[strategy_key](tradeable=prep.mask, regime=prep.regime, **params)
+    return weights_panel(strategy.generate(prep.data_map))
+
+
+def opens_panel(prep) -> pd.DataFrame:
+    return pd.DataFrame({s: df["open"] for s, df in prep.data_map.items()})
+
+
 def evaluate(prep, strategy_key: str, params: dict, cost_per_side: float, bars_per_year: int) -> dict:
     """In-sample, out-of-sample and full stats for one setting on prepared data."""
-    strategy = STRATEGIES[strategy_key](tradeable=prep.mask, regime=prep.regime, **params)
-    weights = weights_panel(strategy.generate(prep.data_map))
-    opens = pd.DataFrame({s: df["open"] for s, df in prep.data_map.items()})
-    equity, turnover = equity_curve(weights, opens, cost_per_side, prep.start)
+    weights = strategy_weights(prep, strategy_key, params)
+    equity, turnover = equity_curve(weights, opens_panel(prep), cost_per_side, prep.start)
     split = pd.Timestamp(prep.split)
     out = {"turnover_per_year": turnover,
            "avg_invested": float(weights.loc[weights.index >= pd.Timestamp(prep.start)].sum(axis=1).mean())}
