@@ -6,6 +6,7 @@
     python -m vibetrading sweep    --strategy momentum [universe ...]
     python -m vibetrading check    [universe ...]
     python -m vibetrading walkforward --strategy momentum [universe ...] [--window 3] [--engine]
+    python -m vibetrading picks    [universe ...]
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ def main(argv: list[str] | None = None) -> int:
                             ("backtest", "run a strategy and print its stats"),
                             ("sweep", "choose settings on the in-sample years (fast evaluator)"),
                             ("check", "compare the fast evaluator with saved engine runs"),
-                            ("walkforward", "re-choose settings each year from earlier years only")]:
+                            ("walkforward", "re-choose settings each year from earlier years only"),
+                            ("picks", "what each strategy holds now (for the portal)")]:
         cmd = commands[name] = sub.add_parser(name, help=help_text)
         cmd.add_argument("universes", nargs="*", metavar="universe",
                          help=f"any of {', '.join(UNIVERSES)} (default: all)")
@@ -55,6 +57,11 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     keys = args.universes or list(UNIVERSES)
+    if args.command == "picks":
+        from vibetrading import picks
+        for key in keys:
+            print(picks.render(picks.run(key)))
+        return 0
     if args.command == "walkforward":
         from vibetrading import walkforward
         windows = [None] + ([args.window] if args.window else [])

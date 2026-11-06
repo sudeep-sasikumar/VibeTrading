@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeTrading</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
+    --accent: #2f5bd3; --good: #1f7a4d; --bad: #b3372f; --warn-bg: #fff6e0; --warn-line: #e8c56b;
+    --strategy: #2f5bd3; --bench: #9a9a93; --chip: #eeede8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --panel: #1d1d1b; --text: #ecebe6; --muted: #9c9b94; --line: #33332f;
+      --accent: #7fa0ff; --good: #5cc28f; --bad: #ef7d73; --warn-bg: #2d2615; --warn-line: #6d5a24;
+      --strategy: #7fa0ff; --bench: #77766f; --chip: #2a2a27;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 16px 24px 0; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; }
+  header .status { color: var(--muted); font-size: 13px; }
+  nav { display: flex; gap: 4px; padding: 12px 24px 0; border-bottom: 1px solid var(--line);
+        overflow-x: auto; }
+  nav a { padding: 8px 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent;
+          white-space: nowrap; }
+  nav a.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  main { padding: 20px 24px 48px; max-width: 1280px; }
+  h2 { font-size: 20px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 24px 0 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .muted { color: var(--muted); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } main, header, nav { padding-left: 16px; padding-right: 16px; } }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+  .warn p { margin: 4px 0; }
+  .verdict { margin: 8px 0 0; font-size: 15px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 10px; font-size: 12px; margin-right: 6px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; }
+  tr.featured td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  tr.clickable { cursor: pointer; }
+  tr.selected td { outline: 0; box-shadow: inset 3px 0 0 var(--accent); }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  .charts { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  .chartbox { position: relative; height: 320px; } .chartbox.small { height: 160px; }
+  button, select, input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+                          border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; } button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  form.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .pick { background: var(--chip); border-radius: 6px; padding: 4px 8px; font-variant-numeric: tabular-nums; }
+  pre.log { background: var(--chip); padding: 10px; border-radius: 6px; max-height: 260px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<header><h1>VibeTrading</h1><span class="status" id="status"></span></header>
+<nav id="tabs"></nav>
+<main id="main"><div class="empty">Loading…</div></main>
+
+<script>
+const $ = (sel, el = document) => el.querySelector(sel);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const pct = (v, digits = 1) => v == null ? "–" : `${(v * 100).toFixed(digits)}%`;
+const num = (v, digits = 2) => v == null ? "–" : Number(v).toFixed(digits);
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+};
+const MEMBERSHIP = {point_in_time: "historical membership", current_only: "today's members only", volume_rank: "monthly volume rank"};
+let overview = null, charts = [], pollTimer = null;
+
+async function boot() {
+  overview = await api("/api/overview");
+  const asOf = overview.data_as_of ? `prices updated ${overview.data_as_of.replace("T", " ").slice(0, 16)} UTC` : "no price data yet";
+  $("#status").textContent = asOf;
+  const tabs = [["overview", "Overview"], ...overview.universes.map(u => [u.key, u.title]), ["jobs", "Jobs"]];
+  $("#tabs").innerHTML = tabs.map(([k, t]) => `<a href="#${k}" data-k="${k}">${esc(t)}</a>`).join("");
+  window.addEventListener("hashchange", route);
+  route();
+}
+
+function route() {
+  const key = location.hash.slice(1) || "overview";
+  document.querySelectorAll("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.k === key));
+  charts.forEach(c => c.destroy()); charts = [];
+  clearTimeout(pollTimer);
+  if (key === "overview") return renderOverview();
+  if (key === "jobs") return renderJobs();
+  return renderUniverse(key);
+}
+
+// ── overview ──
+
+function renderOverview() {
+  const f = overview.featured;
+  const fu = overview.universes.find(u => u.key === f.universe);
+  const fr = fu && fu.runs.find(r => r.label === f.label);
+  const oos = fr && fr.out_of_sample, b = oos && oos.benchmark;
+  const picks = overview.featured_picks;
+  const cols = ["momentum", "momentum-tuned", "pullback", "pullback-tuned"];
+  const cell = (u, label) => {
+    const r = u.runs.find(x => x.label === label);
+    const o = r && r.out_of_sample;
+    if (!o) return `<td class="muted">–</td>`;
+    const beats = o.sharpe != null && o.benchmark && o.benchmark.sharpe != null && o.sharpe > o.benchmark.sharpe;
+    return `<td class="${beats ? "good" : "bad"}" title="Sharpe ${num(o.sharpe)} vs ${num(o.benchmark?.sharpe)}">${pct(o.cagr)} <span class="muted">/ ${num(o.sharpe)}</span></td>`;
+  };
+  $("#main").innerHTML = `
+    <h2>Featured: S&amp;P 500 momentum</h2>
+    <p class="muted">3-month return, top 10 of the 50 most traded members, rebalanced monthly. The one setting that
+      beat buy and hold in walk-forward testing (re-chosen each year from earlier years only). Still unproven:
+      it depends on how settings are chosen, and on mega-caps leading. Paper-trade before trusting it.</p>
+    <div class="grid2">
+      <div class="panel">
+        <h3 style="margin-top:0">Out-of-sample (${esc(oos?.from ?? "")} to ${esc(oos?.to ?? "")})</h3>
+        <table>
+          <tr><th></th><th>CAGR</th><th>Max drawdown</th><th>Sharpe</th></tr>
+          <tr><td>Strategy</td><td>${pct(oos?.cagr)}</td><td>${pct(oos?.max_drawdown)}</td><td>${num(oos?.sharpe)}</td></tr>
+          <tr><td>SPY</td><td>${pct(b?.cagr)}</td><td>${pct(b?.max_drawdown)}</td><td>${num(b?.sharpe)}</td></tr>
+        </table>
+        <p><a href="#sp500">Open the S&amp;P 500 tab →</a></p>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">Holds from the next open ${picks ? `<span class="muted">(prices of ${esc(picks.as_of)})</span>` : ""}</h3>
+        ${picks ? pickChips(picks) : `<p class="muted">No picks yet: run the picks job.</p>`}
+      </div>
+    </div>
+    <h3>Every universe, out-of-sample</h3>
+    <p class="muted">CAGR / Sharpe after the split date (2022 for stocks, 2024 for crypto). Green: Sharpe above buy and hold. Read the warnings on each tab before trusting a number.</p>
+    <div class="panel scroll"><table>
+      <tr><th>Universe</th><th>Membership</th>${cols.map(c => `<th>${esc(c)}</th>`).join("")}<th>Benchmark</th></tr>
+      ${overview.universes.map(u => {
+        const any = u.runs.find(r => r.out_of_sample?.benchmark);
+        const bo = any?.out_of_sample.benchmark;
+        return `<tr class="clickable" onclick="location.hash='${u.key}'"><td>${esc(u.title)}</td>
+          <td><span class="chip">${esc(MEMBERSHIP[u.membership])}</span></td>
+          ${cols.map(c => cell(u, c)).join("")}
+          <td class="muted">${esc(u.benchmark)} ${pct(bo?.cagr)} / ${num(bo?.sharpe)}</td></tr>`;
+      }).join("")}
+    </table></div>
+    <h3>Data</h3>
+    <div class="panel">
+      <p>Prices: ${esc(overview.data_as_of ?? "none yet")}. Last scheduled refresh: ${esc(overview.last_refresh ?? "not yet")}.</p>
+      <form class="inline" onsubmit="return false">
+        <button onclick="submitJob({kind:'refresh'}).then(()=>submitJob({kind:'picks'}))">Refresh prices + picks</button>
+        <button onclick="rerunAll()">Rerun every backtest</button>
+        <span class="muted">Jobs run one at a time; see the Jobs tab.</span>
+      </form>
+    </div>`;
+}
+
+function pickChips(p) {
+  if (!p.positions.length) return `<p class="muted">In cash (${pct(p.invested, 0)} invested).</p>`;
+  const changes = [
+    p.recent_buys.length ? `Bought in the last 5 trading days: ${p.recent_buys.map(esc).join(", ")}` : "",
+    p.recent_sells.length ? `Sold: ${p.recent_sells.map(esc).join(", ")}` : "",
+  ].filter(Boolean).join(" · ");
+  return `<div class="picks">${p.positions.map(x => `<span class="pick">${esc(x.symbol)} ${pct(x.weight, 0)}</span>`).join("")}</div>
+          <p class="muted">${pct(p.invested, 0)} invested. ${changes}</p>`;
+}
+
+// ── universe tab ──
+
+async function renderUniverse(key) {
+  $("#main").innerHTML = `<div class="empty">Loading…</div>`;
+  const u = await api(`/api/universe/${key}`);
+  const runs = u.runs.filter(r => r.summary);
+  const sel = runs.find(r => r.featured) || runs.find(r => r.label.endsWith("-tuned")) || runs[0];
+  $("#main").innerHTML = `
+    <h2>${esc(u.title)}</h2>
+    <div><span class="chip">${esc(MEMBERSHIP[u.membership])}</span><span class="chip">benchmark ${esc(u.benchmark)}</span>
+      <span class="chip">trend filter ${esc(u.regime)}</span>
+      <span class="chip">${u.with_prices ?? "?"} of ${u.symbols ?? "?"} symbols priced</span></div>
+    <p class="verdict">${esc(u.verdict ?? "")}</p>
+    ${u.warnings.length ? `<div class="warn">${u.warnings.map(w => `<p>${esc(w)}</p>`).join("")}</div>` : ""}
+    <h3>Backtests <span class="muted">(click a row to chart it)</span></h3>
+    <div class="panel scroll">${runs.length ? runsTable(runs, sel) : `<div class="empty">No backtests yet.</div>`}</div>
+    <div id="detail"></div>
+    ${u.walkforward.length ? walkforwardSection(u.walkforward) : ""}
+    <h3>Run a backtest</h3>
+    <div class="panel">
+      <form class="inline" id="btform">
+        <select name="strategy">${overview.strategies.map(s => `<option>${s}</option>`).join("")}</select>
+        <select name="tuned"><option value="">default settings</option><option value="1">tuned settings</option></select>
+        <label class="muted">start <input type="date" name="start"></label>
+        <button class="primary" type="submit">Queue backtest</button>
+        <button type="button" id="wfbtn">Queue walk-forward</button>
+        <span id="btmsg" class="muted"></span>
+      </form>
+    </div>`;
+  document.querySelectorAll("tr[data-label]").forEach(tr => tr.addEventListener("click", () => {
+    document.querySelectorAll("tr[data-label]").forEach(x => x.classList.toggle("selected", x === tr));
+    showRun(u, runs.find(r => r.label === tr.dataset.label));
+  }));
+  $("#btform").addEventListener("submit", async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const job = await submitJob({kind: "backtest", universe: key, strategy: fd.get("strategy"),
+                                 tuned: !!fd.get("tuned"), start: fd.get("start") || null});
+    $("#btmsg").innerHTML = `Queued (<a href="#jobs">job ${esc(job.id)}</a>). The table updates when it finishes and you reload.`;
+  });
+  $("#wfbtn").addEventListener("click", async () => {
+    const strategy = new FormData($("#btform")).get("strategy");
+    const job = await submitJob({kind: "walkforward", universe: key, strategy});
+    $("#btmsg").innerHTML = `Queued (<a href="#jobs">job ${esc(job.id)}</a>).`;
+  });
+  if (sel) showRun(u, sel);
+}
+
+function runsTable(runs, sel) {
+  return `<table>
+    <tr><th>Run</th><th>OOS CAGR</th><th>OOS max DD</th><th>OOS Sharpe</th><th>Bench CAGR</th><th>Bench Sharpe</th>
+        <th>Full CAGR</th><th>Full max DD</th><th>Trades</th><th>Win</th><th>Hold days</th><th>Turnover/yr</th><th>Fees</th><th>Run</th></tr>
+    ${runs.map(r => {
+      const s = r.summary, o = s.periods.out_of_sample || {}, f = s.periods.full || {}, b = o.benchmark || {};
+      const beats = o.sharpe != null && b.sharpe != null && o.sharpe > b.sharpe;
+      return `<tr class="clickable ${r.featured ? "featured" : ""} ${r === sel ? "selected" : ""}" data-label="${esc(r.label)}">
+        <td>${esc(r.title)}${r.featured ? ` <span class="chip">featured</span>` : ""}</td>
+        <td class="${beats ? "good" : "bad"}">${pct(o.cagr)}</td><td>${pct(o.max_drawdown)}</td><td>${num(o.sharpe)}</td>
+        <td class="muted">${pct(b.cagr)}</td><td class="muted">${num(b.sharpe)}</td>
+        <td>${pct(f.cagr)}</td><td>${pct(f.max_drawdown)}</td><td>${f.round_trips ?? "–"}</td>
+        <td>${pct(f.win_rate, 0)}</td><td>${num(f.avg_holding_days, 0)}</td><td>${num(f.turnover_per_year, 1)}</td>
+        <td>${pct(f.fees_pct_of_avg_equity, 0)}</td><td class="muted">${esc(r.stamp.slice(0, 8))}</td></tr>`;
+    }).join("")}
+  </table>`;
+}
+
+async function showRun(u, r) {
+  charts.forEach(c => c.destroy()); charts = [];
+  const s = r.summary;
+  const label = r.label;
+  const pickKey = label.includes("walkforward") ? null : label;
+  const picks = pickKey && u.picks && u.picks.strategies[pickKey];
+  const params = s.params.walk_forward_schedule ? "re-chosen each year (see the walk-forward table below)"
+    : Object.entries(s.params).map(([k, v]) => `${k} ${v === null ? "–" : v}`).join(", ");
+  $("#detail").innerHTML = `
+    <h3>${esc(r.title)} <span class="muted">${esc(s.start)} to ${esc(s.end)}, split ${esc(s.split)}</span></h3>
+    <p class="muted">Settings: ${esc(params)}${s.price_breaks?.length ? `. Price breaks split: ${s.price_breaks.map(b => `${esc(b.symbol)} ${esc(b.date)}`).join(", ")}` : ""}</p>
+    <div class="panel charts">
+      <div class="chartbox"><canvas id="eq"></canvas></div>
+      <div class="chartbox small"><canvas id="dd"></canvas></div>
+    </div>
+    <div class="grid2" style="margin-top:16px">
+      <div class="panel scroll"><table>
+        <tr><th>Period</th><th>CAGR</th><th>Max DD</th><th>Sharpe</th><th>Bench CAGR</th><th>Bench DD</th><th>Trades</th><th>Win</th></tr>
+        ${["full", "in_sample", "out_of_sample"].map(n => {
+          const p = s.periods[n]; if (!p) return "";
+          const b = p.benchmark || {};
+          return `<tr><td>${n.replace(/_/g, "-")}</td><td>${pct(p.cagr)}</td><td>${pct(p.max_drawdown)}</td><td>${num(p.sharpe)}</td>
+                  <td class="muted">${pct(b.cagr)}</td><td class="muted">${pct(b.max_drawdown)}</td><td>${p.round_trips ?? "–"}</td><td>${pct(p.win_rate, 0)}</td></tr>`;
+        }).join("")}
+      </table></div>
+      <div class="panel">
+        <strong>Holds from the next open</strong>
+        ${picks ? `<span class="muted"> (prices of ${esc(picks.as_of)})</span>${pickChips(picks)}`
+                : `<p class="muted">${pickKey ? "No picks yet: run the picks job." : "Picks are shown for the default and tuned settings."}</p>`}
+      </div>
+    </div>
+    <h3>Latest closed trades</h3>
+    <div class="panel scroll" id="trades"><div class="empty">Loading…</div></div>`;
+
+  const [series, trades] = await Promise.all([
+    api(`/api/universe/${u.key}/runs/${r.label}/${r.stamp}/series`),
+    api(`/api/universe/${u.key}/runs/${r.label}/${r.stamp}/trades?limit=30`),
+  ]);
+  drawCharts(series, s.split, u.benchmark);
+  $("#trades").innerHTML = trades.length ? `<table>
+    <tr><th>Closed</th><th>Symbol</th><th>Return</th><th>Held (days)</th><th>P&amp;L</th><th>Why</th></tr>
+    ${trades.map(t => `<tr><td>${esc(t.timestamp)}</td><td>${esc(t.code)}</td>
+      <td class="${t.return_pct > 0 ? "good" : "bad"}">${num(t.return_pct, 1)}%</td><td>${t.holding_days}</td>
+      <td>${Math.round(t.pnl).toLocaleString()}</td><td class="muted">${esc(String(t.reason).replace(/_/g, " "))}</td></tr>`).join("")}
+  </table>` : `<div class="empty">No closed trades.</div>`;
+}
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function drawCharts(series, split, benchName) {
+  const splitIndex = series.dates.findIndex(d => d >= split);
+  const splitLine = {
+    id: "split",
+    afterDraw(chart) {
+      if (splitIndex < 0) return;
+      const x = chart.scales.x.getPixelForValue(splitIndex), {top, bottom} = chart.chartArea, ctx = chart.ctx;
+      ctx.save(); ctx.strokeStyle = cssVar("--muted"); ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
+      ctx.fillStyle = cssVar("--muted"); ctx.font = "12px system-ui"; ctx.fillText("out-of-sample →", x + 6, top + 12);
+      ctx.restore();
+    },
+  };
+  const common = {
+    responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
+    plugins: {legend: {labels: {color: cssVar("--muted"), boxWidth: 12}}},
+    scales: {x: {ticks: {color: cssVar("--muted"), maxTicksLimit: 10}, grid: {display: false}}},
+  };
+  const line = (label, data, color, fill) => ({label, data, borderColor: color, backgroundColor: color + "22",
+                                               borderWidth: 1.6, pointRadius: 0, fill, spanGaps: true});
+  charts.push(new Chart($("#eq"), {
+    type: "line", plugins: [splitLine],
+    data: {labels: series.dates, datasets: [line("Strategy", series.strategy, cssVar("--strategy"), false),
+      ...(series.benchmark ? [line(benchName, series.benchmark, cssVar("--bench"), false)] : [])]},
+    options: {...common, scales: {...common.scales, y: {type: "logarithmic", ticks: {color: cssVar("--muted"),
+      callback: v => `${v}×`}, grid: {color: cssVar("--line")}}},
+      plugins: {...common.plugins, title: {display: true, text: "Growth of 1 (log scale)", color: cssVar("--muted")}}},
+  }));
+  charts.push(new Chart($("#dd"), {
+    type: "line", plugins: [splitLine],
+    data: {labels: series.dates, datasets: [line("Strategy drawdown", series.strategy_drawdown, cssVar("--bad"), true),
+      ...(series.benchmark_drawdown ? [line(`${benchName} drawdown`, series.benchmark_drawdown, cssVar("--bench"), false)] : [])]},
+    options: {...common, scales: {...common.scales, y: {ticks: {color: cssVar("--muted"), callback: v => pct(v, 0)},
+      grid: {color: cssVar("--line")}}}},
+  }));
+}
+
+function walkforwardSection(results) {
+  return `<h3>Walk-forward tests <span class="muted">(each year uses the setting that was best on the years before it)</span></h3>
+    ${results.map(r => {
+      const names = ["walk_forward", "default", "single_split_tuned", "grid_average", "benchmark"].filter(n => r.stats[n]);
+      return `<div class="panel scroll" style="margin-bottom:12px">
+        <strong>${esc(r.strategy)}, ${esc(r.window)} training</strong>
+        <span class="muted"> · beat the grid median in ${r.beats_grid_median_years} of ${r.schedule.length} years,
+          the benchmark in ${r.beats_benchmark_years}; ${r.distinct_settings_chosen} different settings chosen</span>
+        <table><tr><th>Year</th><th>Chosen setting</th>${names.map(n => `<th>${esc(n.replace(/_/g, " "))}</th>`).join("")}</tr>
+        ${r.schedule.map(row => `<tr><td>${row.year}</td><td class="muted">${row.params ? esc(Object.entries(row.params).map(([k, v]) => `${k} ${v ?? "–"}`).join(", ")) : "cash"}</td>
+          ${names.map(n => { const v = r.years[n][row.year]; return `<td class="${v > 0 ? "" : "bad"}">${pct(v)}</td>`; }).join("")}</tr>`).join("")}
+        <tr><td><strong>All</strong></td><td class="muted">CAGR / max DD / Sharpe</td>
+          ${names.map(n => { const st = r.stats[n]; return `<td><strong>${pct(st.cagr, 0)}</strong> / ${pct(st.max_drawdown, 0)} / ${num(st.sharpe)}</td>`; }).join("")}</tr>
+        </table></div>`;
+    }).join("")}`;
+}
+
+// ── jobs ──
+
+async function submitJob(body) {
+  return api("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+}
+
+async function rerunAll() {
+  await api("/api/jobs/rerun-all", {method: "POST"});
+  location.hash = "jobs";
+}
+
+async function renderJobs() {
+  const jobs = await api("/api/jobs");
+  const describe = j => [j.kind, j.strategy, j.universe ?? (["refresh", "picks", "backtest"].includes(j.kind) ? "all universes" : ""),
+                         j.tuned ? "tuned" : "", j.start ? `from ${j.start}` : ""].filter(Boolean).join(" · ");
+  $("#main").innerHTML = `<h2>Jobs</h2>
+    <p class="muted">One job runs at a time. Prices and picks refresh every day; backtests run when you ask.</p>
+    <div class="panel scroll">${jobs.length ? `<table>
+      <tr><th>Job</th><th>Status</th><th>Queued</th><th>Finished</th><th></th></tr>
+      ${jobs.map(j => `<tr><td>${esc(describe(j))}</td>
+        <td class="${j.status === "failed" ? "bad" : j.status === "done" ? "good" : ""}">${esc(j.status)}</td>
+        <td class="muted">${esc((j.queued_at ?? "").replace("T", " ").slice(0, 16))}</td>
+        <td class="muted">${esc((j.finished_at ?? "").replace("T", " ").slice(0, 16))}</td>
+        <td><button onclick="showLog('${esc(j.id)}')">Log</button></td></tr>`).join("")}
+    </table>` : `<div class="empty">No jobs yet.</div>`}</div>
+    <div id="log"></div>`;
+  if (jobs.some(j => j.status === "queued" || j.status === "running")) pollTimer = setTimeout(renderJobs, 5000);
+}
+
+async function showLog(id) {
+  const j = await api(`/api/jobs/${id}`);
+  $("#log").innerHTML = `<h3>Log: ${esc(j.args.join(" "))}</h3><pre class="log">${esc(j.log_tail || "(empty)")}</pre>`;
+}
+
+boot().catch(e => { $("#main").innerHTML = `<div class="empty">Couldn't load: ${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

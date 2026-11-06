@@ -5,7 +5,7 @@ Swing-trading backtest portal built on the backtest engines from
 universe: Crypto Top 200, S&P 500, NASDAQ-100, Nifty 50, Nifty Midcap 150,
 Nifty Smallcap 250.
 
-Status: Phase 2 (strategies and backtests) done. Findings:
+Status: portal running locally; VPS deployment next. Findings:
 [Phase 0](docs/phase0-findings.md) (engines), [Phase 1](docs/phase1-findings.md) (data),
 [Phase 2](docs/phase2-findings.md) (first results),
 [tuning](docs/phase2b-tuning-findings.md), [walk-forward](docs/phase2c-walkforward-findings.md).
@@ -76,6 +76,24 @@ Each run prints CAGR, max drawdown, Sharpe, the benchmark's CAGR and drawdown,
 trades, win rate, holding days, turnover and fees, for the whole run, before
 the split date (in-sample) and after it (out-of-sample). The engine's files and
 `summary.json` are saved under `var/runs/<universe>/<strategy>/<time>/`.
+
+## Portal
+
+One tab per universe (backtests, charts against the benchmark, current picks,
+walk-forward tables, warnings about each universe's data) plus an overview
+and a jobs tab. The web app only reads result files under `var/`; refreshing
+prices, backtests and picks run as background jobs, one at a time, each in its
+own process.
+
+```bash
+.venv/Scripts/python -m vibetrading picks                       # current holdings + benchmark series
+.venv/Scripts/python -m uvicorn vibetrading.portal.app:app --port 8077
+```
+
+Environment: `DASHBOARD_PASSWORD` (asks for it when set), `REFRESH_HOUR_UTC`
+(daily refresh + picks, default 23, `off` to disable), `BOOTSTRAP` (default
+`1`: on a first start with no price data, queue the refresh, picks, every
+backtest and the US walk-forwards).
 
 ## Phase 0 spike
 
